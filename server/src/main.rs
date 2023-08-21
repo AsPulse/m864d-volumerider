@@ -1,4 +1,6 @@
-use mixer_server::MixerServer;
+use std::time::Duration;
+
+use mixer_server::{MixerServer, MixerChannel, MixerCommand};
 
 mod mixer_server;
 mod log;
@@ -10,5 +12,11 @@ async fn main() {
         host_levelmeter: "192.168.14.1:3001".to_string(),
     };
 
-    mixer_server.connect().await;
+    let (server, _) = mixer_server.connect().await;
+    loop {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        server.command.send( MixerCommand::SendLevel {
+            channel: MixerChannel::MonoIn(6)
+        }).await.unwrap();
+    }
 }

@@ -1,36 +1,77 @@
-use tokio::{net::TcpStream, sync::{oneshot, mpsc}, io::{AsyncReadExt, AsyncWriteExt}};
+use std::time::Duration;
+
+use chrono::Utc;
+use tokio::{net::TcpStream, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}, task::JoinSet};
 
 use crate::log::log_time_role;
 
 pub struct MixerServer {
     pub host_communicate: String,
     pub host_levelmeter: String,
-    //connection: 
 }
 
-type Responder<T> = oneshot::Sender<T>;
+pub struct MixerConnection {
+    pub command: mpsc::Sender<MixerCommand>,
+    pub level: mpsc::Receiver<Level>,
+}
+
+pub struct Level {
+    time: chrono::DateTime<Utc>,
+    channel: MixerChannel,
+    level: f64,
+}
+
 
 #[derive(Debug)]
-enum MixerCommand {
-    GetLevel {
+pub enum MixerCommand {
+    SendLevel {
         channel: MixerChannel,
-        response: Responder<f32>,
     }
 }
 
 #[derive(Debug)]
-enum MixerChannel {
+pub enum MixerChannel {
     MonoIn(u8),
     StereoIn(u8),
 }
 
+impl MixerChannel {
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::MonoIn(ch) => format!("M_In#{}", ch),
+            Self::StereoIn(ch) => format!("S_In#{}", ch),
+        }
+    }
+    pub fn to_bytes(&self) -> [u8; 2] {
+        match self {
+            Self::MonoIn(ch) => [0x00, *ch],
+            Self::StereoIn(ch) => [0x01, *ch],
+        }
+    }
+    pub fn from_bytes(bytes: [&u8; 2]) -> Self {
+        match bytes {
+            [0x00, ch] => Self::MonoIn(*ch),
+            [0x01, ch] => Self::StereoIn(*ch),
+            _ => unimplemented!("{:?} represents no kind of channel.", bytes)
+        }
+    }
+}
+
 impl MixerServer {
-    pub async fn connect(&self) {
+    pub async fn connect(&self) -> (MixerConnection, JoinSet<()>) {
+        let mut join_set = JoinSet::new();
         let communicate = self.host_communicate.clone();
         let levelmeter = self.host_levelmeter.clone();
         
-        //let (commu_tx, mut commu_rx) = mpsc::channel(32);
-        let commu = tokio::spawn(async move {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
+        let (level_tx, level_rx) = mpsc::channel(32);
+
+        let mixer_connection = MixerConnection {
+            level: level_rx,
+            command: cmd_tx,
+        };
+
+        join_set.spawn(async move {
             println!("<COMMU> Host Connecting...");
             let addr = communicate.as_str();
             let mut stream = TcpStream::connect(addr)
@@ -50,18 +91,24 @@ impl MixerServer {
                             [255] => {
                                 println!("{} Recv Keepalive {:?}", log_time_role("COMMU"), payload);
                                 println!("{} Send Keepalive {:?}", log_time_role("COMMU"), [0xFF]);
-                                stream.write_all(&[0xFF]).await.expect("Write failed!");
+                                stream.write_all(&[0xFF]).await.unwrap();
                             }
                             _ => {
                                 println!("{} Recv {:?} (Unknown)", log_time_role("COMMU"), payload);
                             }
                         }
+                    },
+                    Some(MixerCommand::SendLevel { channel }) = cmd_rx.recv() => {
+                        let [attr, num] = channel.to_bytes();
+                        let payload = [0xf0, 0x03, 0x17, attr, num];
+                        println!("{} Send Request {} Level {:?}", log_time_role("COMMU"), channel.to_string(), payload);
+                        stream.write_all(&payload).await.unwrap();
                     }
                 }
             }
         });
 
-        let level = tokio::spawn(async move {
+        join_set.spawn(async move {
             println!("<LEVEL> Host Connecting...");
             let addr: &str = levelmeter.as_str();
             let mut stream = TcpStream::connect(addr)
@@ -75,15 +122,29 @@ impl MixerServer {
                     Ok(len) = stream.read(&mut buf) => {
                         let payload = &buf[0..len];
                         match payload {
+                            [0xe6, 0x04, 0x00, attr, num, meter] => {
+                                let channel = MixerChannel::from_bytes([attr, num]);
+                                let dbu: f64 = (*meter as f64) - 48.0;
+                                println!("{} Recv {} Level is {:?} {:?}dBu ", log_time_role("LEVEL"), channel.to_string(), dbu, payload);
+                                level_tx.send(Level {
+                                    time: Utc::now(),
+                                    channel,
+                                    level: dbu,
+                                }).await.unwrap();
+                            },
                             _ => {
                                 println!("{} Recv {:?} (Unknown)", log_time_role("LEVEL"), payload);
                             }
                         }
+                    },
+                    _ = tokio::time::sleep(Duration::from_millis(5000)) => {
+                        println!("{} Send Keepalive {:?}", log_time_role("LEVEL"), [0xFF]);
+                        stream.write_all(&[0xFF]).await.unwrap();
                     }
                 }
             }
         });
 
-        tokio::join!(commu, level);
+        (mixer_connection, join_set)
     }
 }
