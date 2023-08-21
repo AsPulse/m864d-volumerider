@@ -60,8 +60,6 @@ impl MixerChannel {
 impl MixerServer {
     pub async fn connect(&self) -> (MixerConnection, JoinSet<()>) {
         let mut join_set = JoinSet::new();
-        let communicate = self.host_communicate.clone();
-        let levelmeter = self.host_levelmeter.clone();
         
         let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
         let (level_tx, level_rx) = mpsc::channel(32);
@@ -71,13 +69,13 @@ impl MixerServer {
             command: cmd_tx,
         };
 
-        join_set.spawn(async move {
-            println!("<COMMU> Host Connecting...");
-            let addr = communicate.as_str();
-            let mut stream = TcpStream::connect(addr)
-                .await
-                .expect(format!("Cannot connect to COMMUNICATE_HOST({0})", addr).as_str());
+        println!("<COMMU> Host Connecting...");
+        let commu_stream = TcpStream::connect(&self.host_communicate)
+            .await
+            .expect(format!("Cannot connect to COMMUNICATE_HOST({0})", &self.host_communicate).as_str());
 
+        join_set.spawn(async move {
+            let mut stream = commu_stream;
             let mut buf: [u8; 512] = [0; 512];
             println!("<COMMU> Host Connected!");
             loop {
@@ -108,13 +106,13 @@ impl MixerServer {
             }
         });
 
-        join_set.spawn(async move {
-            println!("<LEVEL> Host Connecting...");
-            let addr: &str = levelmeter.as_str();
-            let mut stream = TcpStream::connect(addr)
-                .await
-                .expect(format!("Cannot connect to LEVELMETER_HOST({0})", addr).as_str());
+        println!("<LEVEL> Host Connecting...");
+        let level_stream = TcpStream::connect(&self.host_levelmeter)
+            .await
+            .expect(format!("Cannot connect to LEVELMETER_HOST({0})", &self.host_levelmeter).as_str());
 
+        join_set.spawn(async move {
+            let mut stream = level_stream;
             let mut buf: [u8; 512] = [0; 512];
             println!("<LEVEL> Host Connected!");
             loop {

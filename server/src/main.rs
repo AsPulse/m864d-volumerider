@@ -12,11 +12,14 @@ async fn main() {
         host_levelmeter: "192.168.14.1:3001".to_string(),
     };
 
-    let (server, _) = mixer_server.connect().await;
+    let (server, mut joinset) = mixer_server.connect().await;
     loop {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        server.command.send( MixerCommand::SendLevel {
+        if let Err(e) = server.command.send( MixerCommand::SendLevel {
             channel: MixerChannel::MonoIn(6)
-        }).await.unwrap();
+        }).await {
+            println!("Error: {:?}", e);
+        }
     }
+    while let Some(_) = joinset.join_next().await {}
 }
