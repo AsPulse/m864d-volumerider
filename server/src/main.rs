@@ -1,6 +1,7 @@
 use mixer_server::MixerServer;
 
 mod mixer_server;
+mod log;
 
 #[tokio::main]
 async fn main() {
@@ -9,5 +10,5 @@ async fn main() {
         host_levelmeter: "192.168.14.1:3001".to_string(),
     };
 
-    mixer_server.connect().await.0.unwrap();
+    mixer_server.connect().await;
 }

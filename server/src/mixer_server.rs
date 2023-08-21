@@ -1,4 +1,6 @@
-use tokio::{net::TcpStream, sync::{oneshot, mpsc}, io::AsyncReadExt};
+use tokio::{net::TcpStream, sync::{oneshot, mpsc}, io::{AsyncReadExt, AsyncWriteExt}};
+
+use crate::log::log_time_role;
 
 pub struct MixerServer {
     pub host_communicate: String,
@@ -23,10 +25,12 @@ enum MixerChannel {
 }
 
 impl MixerServer {
-    pub async fn connect(&self) -> (Result<(), tokio::task::JoinError>,){
+    pub async fn connect(&self) {
         let communicate = self.host_communicate.clone();
-        //let (host_tx, mut host_rx) = mpsc::channel(32);
-        let host = tokio::spawn(async move {
+        let levelmeter = self.host_levelmeter.clone();
+        
+        //let (commu_tx, mut commu_rx) = mpsc::channel(32);
+        let commu = tokio::spawn(async move {
             println!("<COMMU> Host Connecting...");
             let addr = communicate.as_str();
             let mut stream = TcpStream::connect(addr)
@@ -38,15 +42,18 @@ impl MixerServer {
             loop {
                 tokio::select! {
                     Ok(len) = stream.read(&mut buf) => {
-                        match &buf[0..len] {
+                        let payload = &buf[0..len];
+                        match payload {
                             [223, 1, 1] => {
-                                println!("<COMMU> Recv Established {:?}", &buf[0..len]);
+                                println!("{} Recv Established {:?}", log_time_role("COMMU"), payload);
                             }
                             [255] => {
-                                println!("<COMMU> Recv Keepalive {:?}", &buf[0..len]);
+                                println!("{} Recv Keepalive {:?}", log_time_role("COMMU"), payload);
+                                println!("{} Send Keepalive {:?}", log_time_role("COMMU"), [0xFF]);
+                                stream.write_all(&[0xFF]).await.expect("Write failed!");
                             }
                             _ => {
-                                println!("<COMMU> Recv {:?} (Unknown)", &buf[0..len]);
+                                println!("{} Recv {:?} (Unknown)", log_time_role("COMMU"), payload);
                             }
                         }
                     }
@@ -54,6 +61,29 @@ impl MixerServer {
             }
         });
 
-        return tokio::join!(host);
+        let level = tokio::spawn(async move {
+            println!("<LEVEL> Host Connecting...");
+            let addr: &str = levelmeter.as_str();
+            let mut stream = TcpStream::connect(addr)
+                .await
+                .expect(format!("Cannot connect to LEVELMETER_HOST({0})", addr).as_str());
+
+            let mut buf: [u8; 512] = [0; 512];
+            println!("<LEVEL> Host Connected!");
+            loop {
+                tokio::select! {
+                    Ok(len) = stream.read(&mut buf) => {
+                        let payload = &buf[0..len];
+                        match payload {
+                            _ => {
+                                println!("{} Recv {:?} (Unknown)", log_time_role("LEVEL"), payload);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        tokio::join!(commu, level);
     }
 }
