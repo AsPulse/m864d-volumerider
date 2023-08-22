@@ -16,9 +16,9 @@ pub struct MixerConnection {
 }
 
 pub struct Level {
-    time: chrono::DateTime<Utc>,
-    channel: MixerChannel,
-    level: f64,
+    pub time: chrono::DateTime<Utc>,
+    pub channel: MixerChannel,
+    pub level: f64,
 }
 
 
@@ -26,10 +26,14 @@ pub struct Level {
 pub enum MixerCommand {
     SendLevel {
         channel: MixerChannel,
+    },
+    ChangeLevel {
+        channel: MixerChannel,
+        gain: f64,
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum MixerChannel {
     MonoIn(u8),
     StereoIn(u8),
@@ -96,11 +100,22 @@ impl MixerServer {
                             }
                         }
                     },
-                    Some(MixerCommand::SendLevel { channel }) = cmd_rx.recv() => {
-                        let [attr, num] = channel.to_bytes();
-                        let payload = [0xf0, 0x03, 0x17, attr, num];
-                        println!("{} Send Request {} Level {:?}", log_time_role("COMMU"), channel.to_string(), payload);
-                        stream.write_all(&payload).await.unwrap();
+                    Some(cmd) = cmd_rx.recv() => {
+                        match cmd {
+                            MixerCommand::SendLevel { channel } => {
+                                let [attr, num] = channel.to_bytes();
+                                let payload = [0xf0, 0x03, 0x17, attr, num];
+                                println!("{} Send Request {} Level {:?}", log_time_role("COMMU"), channel.to_string(), payload);
+                                stream.write_all(&payload).await.unwrap();
+                            }
+                            MixerCommand::ChangeLevel { channel, gain } => {
+                                let [attr, num] = channel.to_bytes();
+                                let lev = (gain.clamp(-38.0, 10.0) + 53.0).round() as u8;
+                                let payload = [0x91, 0x03, attr, num, lev];
+                                println!("{} Send Set {} Fader {:?}dB {:?}", log_time_role("COMMU"), channel.to_string(), gain, payload);
+                                stream.write_all(&payload).await.unwrap();
+                            }
+                        }
                     }
                 }
             }
@@ -123,7 +138,7 @@ impl MixerServer {
                             [0xe6, 0x04, 0x00, attr, num, meter] => {
                                 let channel = MixerChannel::from_bytes([attr, num]);
                                 let dbu: f64 = (*meter as f64) - 48.0;
-                                println!("{} Recv {} Level is {:?} {:?}dBu ", log_time_role("LEVEL"), channel.to_string(), dbu, payload);
+                                println!("{} Recv {} Level is {:?}dBu {:?}", log_time_role("LEVEL"), channel.to_string(), dbu, payload);
                                 level_tx.send(Level {
                                     time: Utc::now(),
                                     channel,
